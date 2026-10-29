@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 import streamlit as st
-from openai import OpenAI
+from openai import NotFoundError, OpenAI
 
 SYSTEME = (
     "Tu es Jarvis, un assistant vocal francophone. Réponds en français, de "
@@ -106,11 +106,26 @@ st.session_state.setdefault("messages", [])
 st.session_state.setdefault("audio_vu", None)
 
 
+REPLI = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"] if STT.startswith("whisper-large") else ["gpt-4o-mini"]
+HALLUCINATIONS = ("sous-titrage", "sous-titres", "merci d'avoir regardé", "amara.org")
+
+
+def _chat(msgs):
+    """Essaie le modèle configuré puis les modèles de repli (404 = modèle inconnu)."""
+    derniere = None
+    for modele in dict.fromkeys([MODELE, *REPLI]):
+        try:
+            return client.chat.completions.create(model=modele, messages=msgs, tools=SCHEMAS)
+        except NotFoundError as e:
+            derniere = e
+    raise derniere
+
+
 def repondre(question: str):
     st.session_state.messages.append({"role": "user", "content": question})
     msgs = [{"role": "system", "content": SYSTEME}, *st.session_state.messages[-20:]]
     for _ in range(4):
-        rep = client.chat.completions.create(model=MODELE, messages=msgs, tools=SCHEMAS)
+        rep = _chat(msgs)
         m = rep.choices[0].message
         if not m.tool_calls:
             return m.content or ""
@@ -144,8 +159,12 @@ audio = st.audio_input("Ou parle au micro")
 if audio is not None and audio.file_id != st.session_state.audio_vu:
     st.session_state.audio_vu = audio.file_id
     try:
-        question = client.audio.transcriptions.create(
-            model=STT, file=("voix.wav", audio.getvalue()), language="fr").text.strip() or question
+        texte_vocal = client.audio.transcriptions.create(
+            model=STT, file=("voix.wav", audio.getvalue()), language="fr").text.strip()
+        if texte_vocal.lower().startswith(HALLUCINATIONS) or len(texte_vocal) < 2:
+            st.warning("Je n'ai rien entendu, réessayez en parlant plus près du micro.")
+        else:
+            question = texte_vocal
     except Exception as e:
         st.error(f"Transcription impossible : {type(e).__name__}")
 
@@ -156,7 +175,7 @@ if question:
         try:
             texte = repondre(question)
         except Exception as e:
-            texte = f"Erreur du fournisseur : {type(e).__name__}"
+            texte = f"Erreur du fournisseur : {type(e).__name__} — {str(e)[:200]}"
         st.markdown(texte)
         if parler and not texte.startswith("Erreur"):
             voix(texte)
