@@ -7,7 +7,6 @@ sounddevice. La clé vit dans les secrets Streamlit, jamais dans le code.
 import streamlit as st
 from openai import OpenAI
 
-MODELE = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
 SYSTEME = (
     "Tu es Jarvis, un assistant vocal francophone. Réponds en français, de "
     "façon brève et naturelle. Tu es en mode démonstration web : tu n'as "
@@ -18,12 +17,16 @@ st.set_page_config(page_title="Jarvis", page_icon="🤖")
 st.title("Jarvis — démo web")
 st.caption("Mode texte, sans outils. La version complète tourne en local sur Windows.")
 
-cle = st.secrets.get("OPENAI_API_KEY")
-if not cle:
-    st.error("Secret `OPENAI_API_KEY` manquant : ajoutez-le dans Settings > Secrets.")
+# Groq (gratuit) en priorité, OpenAI en repli. API compatible OpenAI.
+if st.secrets.get("GROQ_API_KEY"):
+    client = OpenAI(api_key=st.secrets["GROQ_API_KEY"], base_url="https://api.groq.com/openai/v1")
+    MODELE = st.secrets.get("MODELE", "llama-3.3-70b-versatile")
+elif st.secrets.get("OPENAI_API_KEY"):
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    MODELE = st.secrets.get("MODELE", "gpt-4o-mini")
+else:
+    st.error("Secret `GROQ_API_KEY` manquant : ajoutez-le dans Settings > Secrets.")
     st.stop()
-
-client = OpenAI(api_key=cle)
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
