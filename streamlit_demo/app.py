@@ -110,13 +110,28 @@ REPLI = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"] if STT.startswith("w
 HALLUCINATIONS = ("sous-titrage", "sous-titres", "merci d'avoir regardé", "amara.org")
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _modeles_dispo() -> list[str]:
+    """Modèles de chat réellement accessibles avec cette clé."""
+    try:
+        ids = [m.id for m in client.models.list().data]
+    except Exception:
+        return []
+    exclus = ("whisper", "tts", "guard", "embed", "orpheus", "playai", "distil")
+    ids = [i for i in ids if not any(x in i.lower() for x in exclus)]
+    prefs = ("llama-3.3", "gpt-oss", "llama-3.1", "qwen", "llama", "gpt-4o", "gpt")
+    return sorted(ids, key=lambda i: next((n for n, p in enumerate(prefs) if p in i.lower()), 99))
+
+
 def _chat(msgs):
-    """Essaie le modèle configuré puis les modèles de repli (404 = modèle inconnu)."""
+    """Modèle configuré, puis repli, puis modèles disponibles sur le compte."""
     derniere = None
-    for modele in dict.fromkeys([MODELE, *REPLI]):
+    for modele in dict.fromkeys([MODELE, *REPLI, *_modeles_dispo()[:4]]):
         try:
             return client.chat.completions.create(model=modele, messages=msgs, tools=SCHEMAS)
         except NotFoundError as e:
+            derniere = e
+        except Exception as e:  # modèle sans outils, etc. : on tente le suivant
             derniere = e
     raise derniere
 
