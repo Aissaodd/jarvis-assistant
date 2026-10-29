@@ -84,3 +84,7 @@ finances/*
 
 # Pack de configuration Claude Code temporaire (supprime apres installation)
 _claude-setup/
+
+# Streamlit
+.streamlit/secrets.toml
+streamlit_demo/.streamlit/secrets.toml
