@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Jarvis mobile</title>
+<style>
+  :root { --bg:#0b0f14; --fg:#e6edf3; --muted:#8b98a5; --card:#151b23; --accent:#3fb6ff; --warn:#ff6b6b; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f5f7fa; --fg:#14202b; --muted:#5b6b7a; --card:#fff; --accent:#0a74c9; --warn:#c92a2a; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.4 system-ui,sans-serif;
+         min-height:100dvh; display:flex; flex-direction:column; padding:0 16px env(safe-area-inset-bottom); }
+  h1 { font-size:1.1rem; margin:16px 0 4px; }
+  #etat { color:var(--muted); font-size:.9rem; }
+  #connexion { background:var(--card); border-radius:12px; padding:12px; margin:12px 0; display:grid; gap:8px; }
+  input { width:100%; padding:10px; border-radius:8px; border:1px solid var(--muted); background:transparent; color:inherit; font:inherit; }
+  label.s { font-size:.85rem; color:var(--muted); display:flex; gap:6px; align-items:center; }
+  label.s input { width:auto; }
+  button { font:inherit; border:0; border-radius:10px; padding:12px; background:var(--accent); color:#fff; cursor:pointer; }
+  button:disabled { opacity:.45; }
+  #journal { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:8px; padding:8px 0; }
+  .m { padding:10px 12px; border-radius:12px; background:var(--card); max-width:88%; word-wrap:break-word; }
+  .m.moi { align-self:flex-end; background:var(--accent); color:#fff; }
+  .m.err { color:var(--warn); }
+  #parler { width:92px; height:92px; border-radius:50%; margin:12px auto; display:block; font-size:2rem; }
+  #parler.ecoute { background:var(--warn); }
+  #note { color:var(--muted); font-size:.8rem; text-align:center; margin-bottom:12px; }
+</style>
+</head>
+<body>
+<h1>Jarvis</h1>
+<div id="etat">Déconnecté</div>
+
+<form id="connexion" autocomplete="off">
+  <input id="sid" placeholder="Identifiant du satellite" autocapitalize="off" required>
+  <input id="token" type="password" placeholder="Token du satellite" autocapitalize="off" required>
+  <label class="s"><input id="retenir" type="checkbox"> Retenir sur cet appareil</label>
+  <button type="submit">Se connecter</button>
+</form>
+
+<div id="journal" aria-live="polite"></div>
+<button id="parler" disabled aria-label="Parler">🎤</button>
+<div id="note">Touchez pour parler, touchez encore pour envoyer. À distance, les actions critiques (mail, appel, extinction…) sont refusées.</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const FREQ_ENVOI = 16000;
+let ws = null, ctxMicro = null, flux = null, proc = null, ecoute = false;
+let ctxLecture = null, prochain = 0, freqLecture = 24000, reste = new Uint8Array(0);
+
+function ligne(txt, cls) {
+  const d = document.createElement("div");
+  d.className = "m " + (cls || "");
+  d.textContent = txt;
+  $("journal").appendChild(d);
+  d.scrollIntoView({block: "end"});
+}
+function etat(t) { $("etat").textContent = t; }
+function stockage(f) { try { return f(); } catch (e) { return null; } }
+
+// Identifiants : jamais dans l'URL, mémorisés seulement si la case est cochée.
+const memo = stockage(() => JSON.parse(localStorage.getItem("jarvis_mobile") || "null"));
+if (memo) { $("sid").value = memo.sid || ""; $("token").value = memo.token || ""; $("retenir").checked = true; }
+
+$("connexion").addEventListener("submit", (e) => {
+  e.preventDefault();
+  stockage(() => $("retenir").checked
+    ? localStorage.setItem("jarvis_mobile", JSON.stringify({sid: $("sid").value, token: $("token").value}))
+    : localStorage.removeItem("jarvis_mobile"));
+  connecter();
+});
+
+function connecter() {
+  if (!window.isSecureContext) { ligne("Cette page doit être ouverte en HTTPS (micro).", "err"); return; }
+  if (ws) ws.close();
+  etat("Connexion…");
+  ws = new WebSocket("wss://" + location.host + "/satellite");
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => ws.send(JSON.stringify({type: "hello", satellite: $("sid").value.trim(), token: $("token").value}));
+  ws.onclose = () => { etat("Déconnecté"); $("parler").disabled = true; $("connexion").hidden = false; arreterMicro(); };
+  ws.onerror = () => ligne("Connexion impossible.", "err");
+  ws.onmessage = (ev) => ev.data instanceof ArrayBuffer ? jouer(ev.data) : controle(JSON.parse(ev.data));
+}
+
+const LIBELLES = {veille: "Prêt", ecoute: "J'écoute…", reflexion: "Je réfléchis…",
+                  parole: "Je parle…", attente_confirmation: "Confirmation attendue"};
+
+function controle(m) {
+  switch (m.type) {
+    case "pret": etat("Connecté" + (m.piece ? " — " + m.piece : "")); $("parler").disabled = false; $("connexion").hidden = true; break;
+    case "etat": etat(LIBELLES[m.etat] || m.etat); $("parler").disabled = m.etat === "parole"; break;
+    case "transcription": ligne(m.texte, "moi"); break;
+    case "texte": ligne(m.texte); break;
+    case "progression": etat(m.texte); break;
+    case "audio_debut": freqLecture = m.freq || 24000; reste = new Uint8Array(0); prochain = 0; break;
+    case "erreur": ligne(m.message || "Erreur", "err"); break;
+  }
+}
+
+// Lecture : PCM16 mono little-endian à la fréquence annoncée par audio_debut.
+function jouer(buf) {
+  if (!ctxLecture) ctxLecture = new (window.AudioContext || window.webkitAudioContext)();
+  const b = new Uint8Array(reste.length + buf.byteLength);
+  b.set(reste); b.set(new Uint8Array(buf), reste.length);
+  const n = b.length >> 1;
+  reste = b.slice(n * 2);
+  if (!n) return;
+  const pcm = new Int16Array(b.slice(0, n * 2).buffer);
+  const ab = ctxLecture.createBuffer(1, n, freqLecture);
+  const f = ab.getChannelData(0);
+  for (let i = 0; i < n; i++) f[i] = pcm[i] / 32768;
+  const src = ctxLecture.createBufferSource();
+  src.buffer = ab; src.connect(ctxLecture.destination);
+  prochain = Math.max(prochain, ctxLecture.currentTime + 0.05);
+  src.start(prochain); prochain += ab.duration;
+}
+
+// Micro : rééchantillonné en PCM16 mono 16 kHz.
+async function demarrerMicro() {
+  if (!ctxLecture) ctxLecture = new (window.AudioContext || window.webkitAudioContext)();
+  ctxLecture.resume();
+  flux = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, channelCount: 1}});
+  ctxMicro = new (window.AudioContext || window.webkitAudioContext)();
+  const src = ctxMicro.createMediaStreamSource(flux);
+  proc = ctxMicro.createScriptProcessor(4096, 1, 1);
+  const ratio = ctxMicro.sampleRate / FREQ_ENVOI;
+  proc.onaudioprocess = (e) => {
+    if (!ecoute || !ws || ws.readyState !== 1) return;
+    const x = e.inputBuffer.getChannelData(0);
+    const n = Math.floor(x.length / ratio), out = new Int16Array(n);
+    for (let i = 0; i < n; i++) {
+      const a = Math.floor(i * ratio), z = Math.max(a + 1, Math.floor((i + 1) * ratio));
+      let s = 0; for (let j = a; j < z && j < x.length; j++) s += x[j];
+      const v = Math.max(-1, Math.min(1, s / (z - a)));
+      out[i] = v < 0 ? v * 32768 : v * 32767;
+    }
+    ws.send(out.buffer);
+  };
+  src.connect(proc); proc.connect(ctxMicro.destination);
+}
+function arreterMicro() {
+  ecoute = false; $("parler").classList.remove("ecoute");
+  if (proc) { proc.disconnect(); proc = null; }
+  if (flux) { flux.getTracks().forEach((t) => t.stop()); flux = null; }
+  if (ctxMicro) { ctxMicro.close(); ctxMicro = null; }
+}
+
+$("parler").addEventListener("click", async () => {
+  if (!ws || ws.readyState !== 1) return;
+  if (!ecoute) {
+    try { await demarrerMicro(); } catch (e) { ligne("Micro refusé ou indisponible.", "err"); return; }
+    ecoute = true; $("parler").classList.add("ecoute"); etat("J'écoute…");
+  } else {
+    arreterMicro();
+    ws.send(JSON.stringify({type: "fin_parole"}));
+  }
+});
+</script>
+</body>
+</html>

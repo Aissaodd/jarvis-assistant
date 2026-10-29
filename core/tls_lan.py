@@ -72,6 +72,20 @@ def assurer_certificat():
     return CERTIFICAT, CLE
 
 
+def certificat_tls():
+    """Certificat du listener : celui de `tailscale cert` si configure et present
+    (navigateurs mobiles : HTTPS valide requis pour le micro), sinon l'auto-signe."""
+    from core.config import reglage
+    crt = str(reglage("satellite_lan.certificat_tailscale", "") or "").strip()
+    cle = str(reglage("satellite_lan.cle_tailscale", "") or "").strip()
+    if crt and cle:
+        crt, cle = Path(crt), Path(cle)
+        if crt.is_file() and cle.is_file():
+            return crt, cle
+        LOG.warning("tls_lan: certificat Tailscale introuvable, repli sur l'auto-signe")
+    return assurer_certificat()
+
+
 def classe_ssl():
     """Classe ssl.SSLContext d'origine, meme apres truststore.inject_into_ssl().
 

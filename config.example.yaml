@@ -522,6 +522,10 @@ satellite_lan:
   port: 8791                   # port EN CLAIR (ws://), le temps de basculer les clients
   tls: true                    # port chiffré (wss://), certificat auto-signé créé dans certs/
   port_tls: 8792
+  # Accès mobile via Tailscale (docs/mobile_tailscale.md) : certificat HTTPS valide
+  # produit par `tailscale cert <machine>.<tailnet>.ts.net` (chemins complets).
+  certificat_tailscale: ""
+  cle_tailscale: ""
   clair: true                  # false une fois tous les clients en wss:// : ferme le port 8791
   whisper_modele: "small"      # modèle dédié au satellite, plus léger que le principal
   whisper_device: "cpu"        # évite de charger un second Whisper sur le GPU

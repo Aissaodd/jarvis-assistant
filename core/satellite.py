@@ -49,6 +49,7 @@ import secrets
 import socket
 import threading
 import time
+from pathlib import Path
 
 from core.config import reglage
 from core.util import nettoyer_reponse_vocale, sans_accents
@@ -933,6 +934,26 @@ def monter_routes(app):
     LOG.info("satellite: route /satellite montée (LAN, token par satellite)")
 
 
+def _monter_page_mobile(app):
+    """Sert web/mobile.html (client navigateur du satellite) sur le listener LAN.
+
+    La page ne contient aucun secret : le token est saisi par l'utilisateur et reste
+    dans son navigateur. Elle n'existe que sur ce listener (jamais sur le serveur
+    unifie, donc jamais derriere ngrok)."""
+    from fastapi.responses import HTMLResponse
+    page = Path(__file__).resolve().parent.parent / "web" / "mobile.html"
+
+    @app.get("/mobile", include_in_schema=False)
+    async def mobile():
+        try:
+            corps = page.read_text(encoding="utf-8")
+        except OSError:
+            return HTMLResponse("mobile.html introuvable", status_code=404)
+        return HTMLResponse(corps, headers={
+            "Cache-Control": "no-store", "X-Frame-Options": "DENY",
+            "Referrer-Policy": "no-referrer"})
+
+
 def _app_lan():
     """Application FastAPI minimale exposée au LAN : audio + agent Windows."""
     global _APP_LAN
@@ -945,6 +966,7 @@ def _app_lan():
             openapi_url=None,
         )
         monter_routes(_APP_LAN)
+        _monter_page_mobile(_APP_LAN)
         from core.poste_distant import monter_routes as monter_poste_distant
         monter_poste_distant(_APP_LAN)
     return _APP_LAN
@@ -972,8 +994,8 @@ def demarrer_lan():
     # reponses ne circulent plus en clair sur le Wi-Fi.
     if bool(reglage("satellite_lan.tls", True)):
         try:
-            from core.tls_lan import assurer_certificat, contexte_serveur
-            certificat, cle = assurer_certificat()
+            from core.tls_lan import certificat_tls, contexte_serveur
+            certificat, cle = certificat_tls()
             port_tls = int(reglage("satellite_lan.port_tls", 8792))
             config_tls = uvicorn.Config(
                 _app_lan(), host=hote, port=port_tls,
